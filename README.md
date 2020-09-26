@@ -1,24 +1,8 @@
-# mvp-machine
+# [mvp-machine](https://pozorfluo.github.io/mvp-machine/docs)
 
-Simple, declarative-ish Typescript state machines inspired by statecharts.
+Minimal statecharts based state machines in Typescript.
 
-handles :
+## todo
 
-- actions
-- automatic transitions
-- nested/compound states
-- self transitions
-- internal transitions
-- state entry/exit events
-
-allows :
-
-- guards
-- transient states
-- final states
-- raised events
-
-does not handle :
-
-- parallel states
-- internal transitions to children compound states
+- [ ] Add extended state (context)
+- [ ] Add guards
