@@ -1,6 +1,7 @@
 # mvp-machine
 
-Simple, declarative-ish Typescript state machines inspired by statecharts.
+Simple, declarative-ish <1kB Typescript state machines inspired by statecharts.
+
 
 handles :
 
