@@ -12,13 +12,6 @@ handles :
 - internal transitions
 - state entry/exit events
 
-allows :
-
-- guards
-- transient states
-- final states
-- raised events
-
 does not handle :
 
 - parallel states
