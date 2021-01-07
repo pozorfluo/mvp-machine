@@ -22,12 +22,12 @@
  */
 
 /**
- * Define State of a Machine.
+ * A relative state or an absolute state.
  */
-export type State = string[];
+export type State = string | string[];
 
 /**
- * Define InternalTransition.
+ *
  */
 export type InternalTransition = null;
 /**
@@ -77,7 +77,7 @@ export type Rules = StateNode & {
 };
 
 const testRule: Rules = {
-  initial: ['a'],
+  initial: 'a',
   states: {
     a: {
       entry: () => null,
@@ -99,7 +99,7 @@ const testMachine: Pick<Machine, 'rules'> = {
     states: {
       a: {
         entry: () => null,
-        initial: ['nestA'],
+        initial: 'nestA',
         states: {
           nestA: {
             on: {
@@ -118,9 +118,14 @@ console.log(testRule, testMachine);
  */
 export interface Machine {
   rules: Rules;
-  _transition: (state: State) => State;
-  _target: (state: State) => Rules;
-  emit: (state: State, action: string, ...payload: unknown[]) => State;
+  _transition: (_current: Rules, state: State) => State;
+  _target: (_current: Rules, state: Extract<State, string>) => Rules;
+  _targetAbsolute: (state: Extract<State, string[]>) => Rules;
+  emit: (
+    state: Extract<State, string[]>,
+    action: string,
+    ...payload: unknown[]
+  ) => State;
 }
 
 /**
@@ -149,8 +154,12 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
    *       unintended match on {} prototype methods.
    */
   this.emit = (() => {
-    return (state: State, action: string, ...payload: unknown[]) => {
-      const _current = this._target(state);
+    return (
+      state: Extract<State, string[]>,
+      action: string,
+      ...payload: unknown[]
+    ) => {
+      const _current = this._targetAbsolute(state);
 
       const handler = _current.on?.[action];
       if (handler) {
@@ -160,7 +169,7 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
           );
         }
         const target = handler.apply(this, payload);
-        return target ? this._transition(target) : state;
+        return target ? this._transition(_current, target) : state;
       }
       return state;
     };
@@ -172,7 +181,10 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
 /**
  *
  */
-Machine.prototype._target = function (this: Machine, state: State): Rules {
+Machine.prototype._targetAbsolute = function (
+  this: Machine,
+  state: Extract<State, string[]>
+): Rules {
   let target = this.rules;
 
   for (let i = 0, depth = state.length; i < depth; i++) {
@@ -191,15 +203,34 @@ Machine.prototype._target = function (this: Machine, state: State): Rules {
 /**
  *
  */
+Machine.prototype._target = function (
+  this: Machine,
+  _current: Rules,
+  state: Extract<State, string>
+): Rules {
+  const target = _current.states?.[state];
+  if (!target) {
+    throw new Error(`${state} does not exist in ${JSON.stringify(_current)} !`);
+  }
+  return target;
+};
+
+/**
+ *
+ */
 Machine.prototype._transition = function (
   this: Machine,
   _current: Rules,
   state: State
 ): State {
   _current.exit?.();
-  let target = this._target(state);
+
+  const target = Array.isArray(state)
+    ? this._targetAbsolute(state)
+    : this._target(_current, state);
+
   target.entry?.();
-  return target.initial ? this._transition(target.initial) : state;
+  return target.initial ? this._transition(target, target.initial) : state;
 };
 
 /**
