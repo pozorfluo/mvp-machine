@@ -7,18 +7,10 @@
  * handles :
  *
  * - actions
- * - automatic transitions
  * - nested/compound states
  * - self transitions
  * - internal transitions
  * - state entry/exit events
- *
- * allows :
- *
- * - guards
- * - transient states
- * - final states
- * - raised events
  *
  * does not handle :
  *
@@ -28,7 +20,6 @@
  * @note Footguns :
  *         - It is possible to set up infinite automatic transition loops
  */
-import { deepFreeze } from './lib/deep-freeze';
 
 /**
  * Define State of a Machine.
@@ -43,7 +34,7 @@ export type InternalTransition = null;
  * Define Transition as either a target State or an InternalTransition.
  *
  * @notes Transition to a State will trigger onEntry, onExit special actions
- * including self-transitions where target State is the same as current State.
+ * including on self-transitions where target State is the same as current State.
  *
  * @note InternalTransition is used to denote that no transition happens and
  * that the Action is executed without causing current State to change.
@@ -67,63 +58,87 @@ export type Action = (...payload: unknown[]) => Transition;
  *
  * @note onExit returned value is ignored to forbid automatic transitions
  *       from this special action.
- *
- *
- * @todo Check if typescript allows onEntry, onExit to be assigned a Rules type
- *       value. Hopefully not.
- * @todo Consider handling parallel states.
- * @todo Consider requiring that properties on Rules MUST be enumerable and
- *       simplifying deepFreeze().
  */
-export interface Rules {
-  [state: string]: {
-    onEntry?: Action;
-    onExit?: Action;
-    actions: {
-      [action: string]: Action;
-    };
-    states?: Rules;
-  };
-}
 
+type StateNode =
+  | {
+      initial: State;
+      states: { [state: string]: Rules };
+    }
+  | { initial?: never; states?: never };
+
+export type Rules = StateNode & {
+  id?: string;
+  entry?: Action;
+  exit?: Action;
+  on?: {
+    [action: string]: Action;
+  };
+};
+
+const testRule: Rules = {
+  initial: ['a'],
+  states: {
+    a: {
+      entry: () => null,
+      initial: ['nestA'],
+      states: {
+        nestA: {
+          on: {
+            doA: () => ['a'],
+          },
+        },
+      },
+    },
+  },
+};
+
+const testMachine: Pick<Machine, 'rules'> = {
+  rules: {
+    initial: ['a'],
+    states: {
+      a: {
+        entry: () => null,
+        initial: ['nestA'],
+        states: {
+          nestA: {
+            on: {
+              doA: () => ['a'],
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+console.log(testRule, testMachine);
 /**
  * Define Machine object.
  */
 export interface Machine {
-  /** Internal cursor */
-  _current: Rules;
-  /** Track State in its unrolled string[] form */
-  _latest_transition: State;
-  states: Rules;
-  _transition: (state: State) => void;
-  emit: (action: string, ...payload: unknown[]) => void;
-  peek: () => State;
-  // /** Register an optional callback fired on Transition. */
-  // onTransition: (event: MachineEvent) => void;
-  // /** Register an optional callback fired on reaching Final state. */
-  // onFinished: (event: MachineEvent) => void;
+  rules: Rules;
+  _transition: (state: State) => State;
+  _target: (state: State) => Rules;
+  emit: (state: State, action: string, ...payload: unknown[]) => State;
 }
 
 /**
  * Define Machine constructor.
  */
 export type MachineCtor = {
-  new (rules: Rules, initial_state: State): Machine;
+  new (rules: Rules): Machine;
 };
 
 /**
  * Create a new Machine object.
  */
-export const Machine = (function (
-  this: Machine,
-  rules: Rules,
-  initial_state: State
-): Machine {
+export const Machine = (function (this: Machine, rules: Rules): Machine {
   if (!new.target) {
     throw new Error('Machine() must be called with new !');
   }
 
-  this.states = deepFreeze(rules) as Rules;
+  this.rules = rules;
   /**
    * Execute Action handler if a rule for given action name exists in current
    * Machine State, passing along given payload as Action arguments.
@@ -134,68 +149,59 @@ export const Machine = (function (
    *       unintended match on {} prototype methods.
    */
   this.emit = (() => {
-    return (action: string, ...payload: unknown[]) => {
-      if (action in this._current.actions) {
-        const handler = (<any>this._current.actions)[action];
+    return (state: State, action: string, ...payload: unknown[]) => {
+      const _current = this._target(state);
+
+      const handler = _current.on?.[action];
+      if (handler) {
         if (payload.length !== handler.length) {
           throw new Error(
             `${action} expects ${handler.length} arguments, ${payload.length} given !`
           );
         }
         const target = handler.apply(this, payload);
-
-        if (target) {
-          this._transition(target);
-        }
+        return target ? this._transition(target) : state;
       }
+      return state;
     };
   })();
-  /** @note Bootstrap _current to a mock minimum viable rule. */
-  this._current = { init: { actions: {} } };
-  this._transition(initial_state);
+
   return this;
 } as any) as MachineCtor;
 
 /**
- * @throws If target State does NOT exist on this Machine.
+ *
  */
-Machine.prototype._transition = function (state: State) {
-  if ('onExit' in this._current) {
-    /** Forbid automatic transition onExit by ignoring returned value. */
-    this._current.onExit();
-  }
+Machine.prototype._target = function (this: Machine, state: State): Rules {
+  let target = this.rules;
 
-  let target = this;
-
-  const depth = state.length;
-  for (let i = 0; i < depth; i++) {
-    const s = state[i];
-    if (s in target.states) {
-      target = target.states[s];
+  for (let i = 0, depth = state.length; i < depth; i++) {
+    const exists = target.states?.[state[i]];
+    if (exists) {
+      target = exists;
     } else {
       throw new Error(
-        `${s} does not exist in ${i ? state[i - 1] : 'top level'} !`
+        `${state[i]} does not exist in ${i ? state[i - 1] : 'top level'} !`
       );
     }
   }
-
-  this._current = target;
-  this._latest_transition = state;
-
-  if ('onEntry' in this._current) {
-    const automatic_transition = this._current.onEntry();
-    if (automatic_transition) {
-      this._transition(automatic_transition);
-    }
-  }
+  return target;
 };
 
 /**
- * Return a copy of this Machine State in its unrolled string[] form.
  *
- * @note Use to check a Machine current State or to initialize a new Machine
- *       with identical or compatible Rules to
  */
-Machine.prototype.peek = function () {
-  return [...this._latest_transition];
+Machine.prototype._transition = function (
+  this: Machine,
+  _current: Rules,
+  state: State
+): State {
+  _current.exit?.();
+  let target = this._target(state);
+  target.entry?.();
+  return target.initial ? this._transition(target.initial) : state;
 };
+
+/**
+ * @todo Hook factory.
+ */

@@ -136,11 +136,11 @@ describe('Machine', () => {
     }).toThrow();
   });
   //----------------------------------------------------------------------------
-  it('throws when trying to change its rules after creation', () => {
-    expect(() => {
-      machine.states.a.actions.doThis = () => ['test_state'];
-    }).toThrow();
-  });
+  //   it('throws when trying to change its rules after creation', () => {
+  //     expect(() => {
+  //       machine.states.a.actions.doThis = () => ['test_state'];
+  //     }).toThrow();
+  //   });
   //----------------------------------------------------------------------------
   it('can return its current state', () => {
     expect(machine.peek()).toEqual(['a']);
