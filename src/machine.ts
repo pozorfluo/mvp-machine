@@ -22,10 +22,11 @@
  */
 
 /**
- * A relative state or an absolute state.
+ * A relative or an absolute state path.
  */
-export type State = string | string[];
-
+export type StatePath = string | string[];
+export type AbsoluteStatePath = Extract<StatePath, string[]>;
+export type RelativeStatePath = Extract<StatePath, string>;
 /**
  *
  */
@@ -39,7 +40,7 @@ export type InternalTransition = null;
  * @note InternalTransition is used to denote that no transition happens and
  * that the Action is executed without causing current State to change.
  */
-export type Transition = State | InternalTransition;
+export type Transition = StatePath | InternalTransition;
 
 /**
  * Define Action handlers of a Machine Rules.
@@ -62,7 +63,7 @@ export type Action = (...payload: unknown[]) => Transition;
 
 type StateNode =
   | {
-      initial: State;
+      initial: StatePath;
       states: { [state: string]: Rules };
     }
   | { initial?: never; states?: never };
@@ -93,6 +94,54 @@ const testRule: Rules = {
   },
 };
 
+const AnotherRuleSet: Rules = {
+  id: 'calendarMachine',
+  initial: 'IDLE',
+  states: {
+    IDLE: {
+      on: {
+        fetchCalendars: async () => 'LOADING_CALENDARS',
+      },
+    },
+    LOADING_CALENDARS: {
+      on: {
+        fetchCalendarsSuccess: () => 'CALENDARS_FETCHED',
+        fetchCalendarsFailure: () => 'FAILURE',
+      },
+    },
+    CALENDARS_FETCHED: {
+      on: {
+        fetchEvents: () => 'LOADING_EVENTS',
+        // displayDay: "DAY",
+        // displayWeek: "WEEK",
+        // displayYear: "YEAR",
+      },
+    },
+    LOADING_EVENTS: {
+      on: {
+        fetchEventsSuccess: () => 'DISPLAY',
+        fetchEventsFailure: () => 'FAILURE',
+      },
+    },
+    DISPLAY: {
+      on: {
+        changeDate: () => 'LOADING_EVENTS',
+        createEvent: () => 'CREATING_EVENT',
+        updateEvent: () => 'UPDATING_EVENT',
+        editEvent: () => 'EDIT',
+      },
+    },
+    EDIT: {
+      on: {
+        updateEvent: () => 'UPDATING_EVENT',
+        createEvent: () => 'CREATING_EVENT',
+        deleteEvent: () => 'DELETING_EVENT',
+        cancelEditEvent: () => 'DISPLAY',
+      },
+    },
+  },
+};
+
 const testMachine: Pick<Machine, 'rules'> = {
   rules: {
     initial: ['a'],
@@ -118,14 +167,18 @@ console.log(testRule, testMachine);
  */
 export interface Machine {
   rules: Rules;
-  _transition: (_current: Rules, state: State) => State;
-  _target: (_current: Rules, state: Extract<State, string>) => Rules;
-  _targetAbsolute: (state: Extract<State, string[]>) => Rules;
+  _transition: (
+    _current: Rules,
+    state: AbsoluteStatePath,
+    target: StatePath
+  ) => AbsoluteStatePath;
+  _target: (_current: Rules, state: RelativeStatePath) => Rules;
+  _targetAbsolute: (state: AbsoluteStatePath) => Rules;
   emit: (
-    state: Extract<State, string[]>,
+    state: AbsoluteStatePath,
     action: string,
     ...payload: unknown[]
-  ) => State;
+  ) => AbsoluteStatePath;
 }
 
 /**
@@ -152,10 +205,12 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
    *
    * @todo Consider using hasOwnProperty or not inheriting from Object to avoid
    *       unintended match on {} prototype methods.
+   *
+   * @todo Handle 'globally' available actions ?
    */
   this.emit = (() => {
     return (
-      state: Extract<State, string[]>,
+      state: AbsoluteStatePath,
       action: string,
       ...payload: unknown[]
     ) => {
@@ -169,7 +224,7 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
           );
         }
         const target = handler.apply(this, payload);
-        return target ? this._transition(_current, target) : state;
+        return target ? this._transition(_current, state, target) : state;
       }
       return state;
     };
@@ -183,7 +238,7 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
  */
 Machine.prototype._targetAbsolute = function (
   this: Machine,
-  state: Extract<State, string[]>
+  state: AbsoluteStatePath
 ): Rules {
   let target = this.rules;
 
@@ -206,7 +261,7 @@ Machine.prototype._targetAbsolute = function (
 Machine.prototype._target = function (
   this: Machine,
   _current: Rules,
-  state: Extract<State, string>
+  state: RelativeStatePath
 ): Rules {
   const target = _current.states?.[state];
   if (!target) {
@@ -221,18 +276,32 @@ Machine.prototype._target = function (
 Machine.prototype._transition = function (
   this: Machine,
   _current: Rules,
-  state: State
-): State {
+  state: AbsoluteStatePath,
+  target: StatePath
+): AbsoluteStatePath {
   _current.exit?.();
 
-  const target = Array.isArray(state)
-    ? this._targetAbsolute(state)
-    : this._target(_current, state);
+  let _new, newState;
 
-  target.entry?.();
-  return target.initial ? this._transition(target, target.initial) : state;
+  if (Array.isArray(target)) {
+    _new = this._targetAbsolute(target);
+    newState = target;
+  } else {
+    _new = this._target(_current, target);
+    newState = [...state, target];
+  }
+
+  _new.entry?.();
+
+  return _new.initial
+    ? this._transition(_new, newState, _new.initial)
+    : newState;
 };
 
 /**
  * @todo Hook factory.
+ */
+
+/**
+ * @todo Selector that return a '/' joined version of AbsolutePath.
  */
