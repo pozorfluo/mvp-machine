@@ -27,8 +27,12 @@ function useMachine() {
      *      This is most likely a big no-no for isomorphic app.
      */
     machineRef.current = new Machine(rules, {
-      /** Without redux. */
-      //   onTransition: (state) => setStatus(state),
+      /** 
+       * Without redux : 
+       *   onTransition: (state) => setStatus(state),
+       * 
+       * @todo Fire onTransition only if state changed.
+       */
       onTransition: (state) => dispatch(setCalendarsStatus(state)),
       /** How to make dispatch/context available to machine, if/when it needs it ? */
       context: {

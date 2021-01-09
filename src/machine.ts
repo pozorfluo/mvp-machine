@@ -49,7 +49,13 @@ export type Transition = StatePath | InternalTransition;
  * Transition value which is either a target State or a value to denote an
  * InternalTransition.
  */
-export type Action = (...payload: unknown[]) => Transition;
+export type PayloadShape = {
+  command: string;
+};
+
+export type Action<TPayload extends PayloadShape> = (
+  payload: TPayload
+) => Transition;
 
 /**
  * Define Rules with possible states, actions of a Machine.
@@ -61,137 +67,58 @@ export type Action = (...payload: unknown[]) => Transition;
  *       from this special action.
  */
 
-type StateNode =
+type StateNode<TPayload extends PayloadShape> =
   | {
       initial: StatePath;
-      states: { [state: string]: Rules };
+      states: { [state: string]: Rules<TPayload> };
     }
   | { initial?: never; states?: never };
 
-export type Rules = StateNode & {
+export type Rules<TPayload extends PayloadShape> = StateNode<TPayload> & {
   id?: string;
-  entry?: Action;
-  exit?: Action;
+  entry?: Action<{ command: 'entry' }>;
+  exit?: Action<{ command: 'exit' }>;
   on?: {
-    [action: string]: Action;
+    [K in TPayload['command']]?: Action<TPayload & { command: K }>;
   };
 };
 
-const testRule: Rules = {
-  initial: 'a',
-  states: {
-    a: {
-      entry: () => null,
-      initial: ['nestA'],
-      states: {
-        nestA: {
-          on: {
-            doA: () => ['a'],
-          },
-        },
-      },
-    },
-  },
-};
-
-const AnotherRuleSet: Rules = {
-  id: 'calendarMachine',
-  initial: 'IDLE',
-  states: {
-    IDLE: {
-      on: {
-        fetchCalendars: async () => 'LOADING_CALENDARS',
-      },
-    },
-    LOADING_CALENDARS: {
-      on: {
-        fetchCalendarsSuccess: () => 'CALENDARS_FETCHED',
-        fetchCalendarsFailure: () => 'FAILURE',
-      },
-    },
-    CALENDARS_FETCHED: {
-      on: {
-        fetchEvents: () => 'LOADING_EVENTS',
-        // displayDay: "DAY",
-        // displayWeek: "WEEK",
-        // displayYear: "YEAR",
-      },
-    },
-    LOADING_EVENTS: {
-      on: {
-        fetchEventsSuccess: () => 'DISPLAY',
-        fetchEventsFailure: () => 'FAILURE',
-      },
-    },
-    DISPLAY: {
-      on: {
-        changeDate: () => 'LOADING_EVENTS',
-        createEvent: () => 'CREATING_EVENT',
-        updateEvent: () => 'UPDATING_EVENT',
-        editEvent: () => 'EDIT',
-      },
-    },
-    EDIT: {
-      on: {
-        updateEvent: () => 'UPDATING_EVENT',
-        createEvent: () => 'CREATING_EVENT',
-        deleteEvent: () => 'DELETING_EVENT',
-        cancelEditEvent: () => 'DISPLAY',
-      },
-    },
-  },
-};
-
-const testMachine: Pick<Machine, 'rules'> = {
-  rules: {
-    initial: ['a'],
-    states: {
-      a: {
-        entry: () => null,
-        initial: 'nestA',
-        states: {
-          nestA: {
-            on: {
-              doA: () => ['a'],
-            },
-          },
-        },
-      },
-    },
-  },
-};
-
-console.log(testRule, testMachine);
 /**
  * Define Machine object.
  */
-export interface Machine {
-  rules: Rules;
+export interface Machine<TPayload extends PayloadShape> {
+  rules: Rules<TPayload>;
   _transition: (
-    _current: Rules,
+    _current: Rules<TPayload>,
     state: AbsoluteStatePath,
     target: StatePath
   ) => AbsoluteStatePath;
-  _target: (_current: Rules, state: RelativeStatePath) => Rules;
-  _targetAbsolute: (state: AbsoluteStatePath) => Rules;
+  _target: (
+    _current: Rules<TPayload>,
+    state: RelativeStatePath
+  ) => Rules<TPayload>;
+  _targetAbsolute: (state: AbsoluteStatePath) => Rules<TPayload>;
   emit: (
     state: AbsoluteStatePath,
     action: string,
-    ...payload: unknown[]
+    payload: TPayload
   ) => AbsoluteStatePath;
 }
 
 /**
  * Define Machine constructor.
  */
-export type MachineCtor = {
-  new (rules: Rules): Machine;
+export type MachineCtor<TPayload extends PayloadShape> = {
+  new (rules: Rules<TPayload>): Machine<TPayload>;
 };
 
 /**
  * Create a new Machine object.
  */
-export const Machine = (function (this: Machine, rules: Rules): Machine {
+export const Machine = function <TPayload extends PayloadShape>(
+  this: Machine<TPayload>,
+  rules: Rules<TPayload>
+): Machine<TPayload> {
   if (!new.target) {
     throw new Error('Machine() must be called with new !');
   }
@@ -211,19 +138,20 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
   this.emit = (() => {
     return (
       state: AbsoluteStatePath,
-      action: string,
-      ...payload: unknown[]
+      action: TPayload['command'],
+      payload: TPayload
     ) => {
       const _current = this._targetAbsolute(state);
 
       const handler = _current.on?.[action];
       if (handler) {
-        if (payload.length !== handler.length) {
-          throw new Error(
-            `${action} expects ${handler.length} arguments, ${payload.length} given !`
-          );
-        }
-        const target = handler.apply(this, payload);
+        // if (payload.length !== handler.length) {
+        //   throw new Error(
+        //     `${action} expects ${handler.length} arguments, ${payload.length} given !`
+        //   );
+        // }
+        // const target = handler.apply(this, payload);
+        const target = handler(payload);
         return target ? this._transition(_current, state, target) : state;
       }
       return state;
@@ -231,15 +159,14 @@ export const Machine = (function (this: Machine, rules: Rules): Machine {
   })();
 
   return this;
-} as any) as MachineCtor;
-
+}; //as any) as MachineCtor<TestPayload>;
 /**
  *
  */
-Machine.prototype._targetAbsolute = function (
-  this: Machine,
+Machine.prototype._targetAbsolute = function <TPayload extends PayloadShape>(
+  this: Machine<TPayload>,
   state: AbsoluteStatePath
-): Rules {
+): Rules<TPayload> {
   let target = this.rules;
 
   for (let i = 0, depth = state.length; i < depth; i++) {
@@ -258,11 +185,11 @@ Machine.prototype._targetAbsolute = function (
 /**
  *
  */
-Machine.prototype._target = function (
-  this: Machine,
-  _current: Rules,
+Machine.prototype._target = function <TPayload extends PayloadShape>(
+  this: Machine<TPayload>,
+  _current: Rules<TPayload>,
   state: RelativeStatePath
-): Rules {
+): Rules<TPayload> {
   const target = _current.states?.[state];
   if (!target) {
     throw new Error(`${state} does not exist in ${JSON.stringify(_current)} !`);
@@ -273,13 +200,13 @@ Machine.prototype._target = function (
 /**
  *
  */
-Machine.prototype._transition = function (
-  this: Machine,
-  _current: Rules,
+Machine.prototype._transition = function <TPayload extends PayloadShape>(
+  this: Machine<TPayload>,
+  _current: Rules<TPayload>,
   state: AbsoluteStatePath,
   target: StatePath
 ): AbsoluteStatePath {
-  _current.exit?.();
+  _current.exit?.({ command: 'exit' });
 
   let _new, newState;
 
@@ -291,7 +218,7 @@ Machine.prototype._transition = function (
     newState = [...state, target];
   }
 
-  _new.entry?.();
+  _new.entry?.({ command: 'entry' });
 
   return _new.initial
     ? this._transition(_new, newState, _new.initial)
@@ -305,3 +232,102 @@ Machine.prototype._transition = function (
 /**
  * @todo Selector that return a '/' joined version of AbsolutePath.
  */
+
+type WithDispatch = { dispatch: {} };
+type TestPayload = WithDispatch &
+  (
+    | { command: 'fetchCalendars' }
+    | { command: 'fetchCalendarsSuccess'; delay: number }
+    | {
+        command: 'fetchCalendarsFailure';
+        a: string;
+        b: number;
+        c: { d: boolean; e: string };
+      }
+  );
+
+const AnotherRuleSet: Rules<TestPayload> = {
+  id: 'calendarMachine',
+  initial: 'IDLE',
+  states: {
+    LOADING_CALENDARS: {
+      on: {
+        fetchCalendarsSuccess: (payload) => {
+          //   if (payload.command === 'fetchCalendarsSuccess') {
+          console.log(payload.command, payload.dispatch);
+          //   }
+          return 'CALENDARS_FETCHED';
+        },
+        fetchCalendarsFailure: ({ command, dispatch, a, b, c: { d, e } }) =>
+          'FAILURE',
+      },
+    },
+  },
+};
+
+const testMachine = new (Machine as any as MachineCtor<TestPayload>)(AnotherRuleSet);
+
+// const actionTest: Action<TestPayload> = (payload) => {
+//   if (payload.command === 'fetchCalendarsSuccess') {
+//     console.log(payload.command, payload.delay);
+//   }
+//   return null;
+// };
+
+// actionTest({ command: 'fetchCalendarsSuccess', delay: 8 });
+// const actionTest3: Action<{ command: string; a: string }> = () =>
+//   null;
+// const actionTest2: Action<{ command: string }> = () => null;
+// const actionTest4: Action<{ command: string }> = (payload: { a: string }) => null;
+
+// const AnotherRuleSet: Rules<TestPayload> = {
+//   id: 'calendarMachine',
+//   initial: 'IDLE',
+//   states: {
+//     IDLE: {
+//       on: {
+//         fetchCalendars: () => 'LOADING_CALENDARS',
+//       },
+//     },
+//     LOADING_CALENDARS: {
+//       on: {
+//         fetchCalendarsSuccess: ({
+//           a: string,
+//           b: number,
+//           c: { d: boolean, e: string },
+//         }) => 'CALENDARS_FETCHED',
+//         fetchCalendarsFailure: () => 'FAILURE',
+//       },
+//     },
+//     CALENDARS_FETCHED: {
+//       on: {
+//         fetchEvents: () => 'LOADING_EVENTS',
+//         // displayDay: "DAY",
+//         // displayWeek: "WEEK",
+//         // displayYear: "YEAR",
+//       },
+//     },
+//     LOADING_EVENTS: {
+//       on: {
+//         fetchEventsSuccess: () => 'DISPLAY',
+//         fetchEventsFailure: () => 'FAILURE',
+//       },
+//     },
+//     DISPLAY: {
+//       on: {
+//         changeDate: () => 'LOADING_EVENTS',
+//         createEvent: () => 'CREATING_EVENT',
+//         updateEvent: () => 'UPDATING_EVENT',
+//         editEvent: () => 'EDIT',
+//       },
+//     },
+//     EDIT: {
+//       on: {
+//         updateEvent: () => 'UPDATING_EVENT',
+//         createEvent: () => 'CREATING_EVENT',
+//         deleteEvent: () => 'DELETING_EVENT',
+//         cancelEditEvent: () => 'DISPLAY',
+//       },
+//     },
+//   },
+// };
