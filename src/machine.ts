@@ -22,8 +22,13 @@
  */
 
 /**
- * A relative or an absolute state path.
+ * absolute state id    : '#top.state.sub'
+ * relative state id    : 'sub'
+ * absolute state path  : ['#top', 'state', 'sub']
+ * relative state path  : 'sub'
  */
+export type StateId = string;
+export const STATE_PATH_DELIMITER = '.';
 export type StatePath = string | string[];
 export type AbsoluteStatePath = Extract<StatePath, string[]>;
 export type RelativeStatePath = Extract<StatePath, string>;
@@ -40,7 +45,7 @@ export type InternalTransition = null;
  * @note InternalTransition is used to denote that no transition happens and
  * that the Action is executed without causing current State to change.
  */
-export type Transition = StatePath | InternalTransition;
+export type Transition = StateId | InternalTransition;
 
 /**
  * Define Action handlers of a Machine Rules.
@@ -49,8 +54,8 @@ export type Transition = StatePath | InternalTransition;
  * Transition value which is either a target State or a value to denote an
  * InternalTransition.
  */
-export type PayloadShape = {
-  command: string;
+export type PayloadShape<TCommand = string> = {
+  command: TCommand;
 };
 
 export type Action<TPayload extends PayloadShape> = (
@@ -86,8 +91,8 @@ export type Rules<TPayload extends PayloadShape> = StateNode<TPayload> & {
 /**
  * Define Machine object.
  */
-export interface Machine<TPayload extends PayloadShape> {
-  rules: Rules<TPayload>;
+export interface Machine<TPayload extends PayloadShape = any> {
+  rules: Rules<TPayload> & { id: string };
   _transition: (
     _current: Rules<TPayload>,
     state: AbsoluteStatePath,
@@ -99,12 +104,23 @@ export interface Machine<TPayload extends PayloadShape> {
   ) => Rules<TPayload>;
   _targetAbsolute: (state: AbsoluteStatePath) => Rules<TPayload>;
   emit: (
-    state: AbsoluteStatePath,
-    action: string,
+    absoluteStateId: StateId,
+    // action: string,
     payload: TPayload
-  ) => AbsoluteStatePath;
+  ) => StateId;
 }
 
+/**
+ * @note A lone '#top' will yield a relative path that makes no sense.
+ */
+export function toStatePath(id: StateId): StatePath {
+  const path = id.split(STATE_PATH_DELIMITER);
+  return path.length === 1 ? path[0] : path.slice(1);
+}
+
+export function toStateId(topId: string, path: AbsoluteStatePath): StateId {
+  return `#${topId}.${path.join('.')}`;
+}
 /**
  * Define Machine constructor.
  */
@@ -117,7 +133,7 @@ export type MachineCtor<TPayload extends PayloadShape> = {
  */
 export const Machine = function <TPayload extends PayloadShape>(
   this: Machine<TPayload>,
-  rules: Rules<TPayload>
+  rules: Rules<TPayload> & { id: string }
 ): Machine<TPayload> {
   if (!new.target) {
     throw new Error('Machine() must be called with new !');
@@ -137,24 +153,45 @@ export const Machine = function <TPayload extends PayloadShape>(
    */
   this.emit = (() => {
     return (
-      state: AbsoluteStatePath,
-      action: TPayload['command'],
+      absoluteStateId: StateId,
+      //   action: TPayload['command'],
       payload: TPayload
     ) => {
-      const _current = this._targetAbsolute(state);
+      /** @todo Look for a way to 'enforce' absoluteStateId beyond asking nicely. */
+      const statePath = toStatePath(absoluteStateId) as AbsoluteStatePath;
+      //   const _current = this._targetAbsolute(state);
 
-      const handler = _current.on?.[action];
-      if (handler) {
-        // if (payload.length !== handler.length) {
-        //   throw new Error(
-        //     `${action} expects ${handler.length} arguments, ${payload.length} given !`
-        //   );
-        // }
-        // const target = handler.apply(this, payload);
-        const target = handler(payload);
-        return target ? this._transition(_current, state, target) : state;
+      let _current: Rules<TPayload> = this.rules;
+      let handler: Action<TPayload> | undefined = undefined;
+
+      for (let i = 0, depth = statePath.length; i < depth; i++) {
+        const exists = _current.states?.[statePath[i]];
+        if (exists) {
+            _current = exists;
+        } else {
+          throw new Error(
+            `Invalid path : ${absoluteStateId} does not exist in ${this.rules.id} !`
+          );
+        }
+        /**
+         * Latch on deepest available command handler if any.
+         * 
+         * @todo Check if asserting TPayload['command'] is fine or if TS has reasons
+         *       to be dubious about it.
+         */
+        handler = _current.on?.[payload.command as TPayload['command']] ?? handler;
       }
-      return state;
+
+      if (handler) {
+        const target = handler(payload);
+        return target
+          ? toStateId(
+              this.rules.id,
+              this._transition(_current, statePath, target)
+            )
+          : absoluteStateId;
+      }
+      return absoluteStateId;
     };
   })();
 
@@ -167,7 +204,7 @@ Machine.prototype._targetAbsolute = function <TPayload extends PayloadShape>(
   this: Machine<TPayload>,
   state: AbsoluteStatePath
 ): Rules<TPayload> {
-  let target = this.rules;
+  let target: Rules<TPayload> = this.rules;
 
   for (let i = 0, depth = state.length; i < depth; i++) {
     const exists = target.states?.[state[i]];
@@ -220,6 +257,9 @@ Machine.prototype._transition = function <TPayload extends PayloadShape>(
 
   _new.entry?.({ command: 'entry' });
 
+  /**
+   * @todo fire whatever is registered as .onTransition here.
+   */
   return _new.initial
     ? this._transition(_new, newState, _new.initial)
     : newState;
@@ -230,7 +270,8 @@ Machine.prototype._transition = function <TPayload extends PayloadShape>(
  */
 
 /**
- * @todo Selector that return a '/' joined version of AbsolutePath.
+ *
+ * @todo Selector that return a delimiter joined version of AbsolutePath.
  */
 
 type WithDispatch = { dispatch: {} };
@@ -265,7 +306,9 @@ const AnotherRuleSet: Rules<TestPayload> = {
   },
 };
 
-const testMachine = new (Machine as any as MachineCtor<TestPayload>)(AnotherRuleSet);
+const testMachine = new ((Machine as any) as MachineCtor<TestPayload>)(
+  AnotherRuleSet
+);
 
 // const actionTest: Action<TestPayload> = (payload) => {
 //   if (payload.command === 'fetchCalendarsSuccess') {
