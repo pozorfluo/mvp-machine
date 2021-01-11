@@ -54,12 +54,12 @@ export type Transition = StateId | InternalTransition;
  * Transition value which is either a target State or a value to denote an
  * InternalTransition.
  */
-export type PayloadShape<TCommand = string> = {
+export type CommandShape<TCommand = string> = {
   command: TCommand;
 };
 
-export type Action<TPayload extends PayloadShape> = (
-  payload: TPayload
+export type Action<TCommand extends CommandShape> = (
+  payload: TCommand
 ) => Transition;
 
 /**
@@ -72,41 +72,44 @@ export type Action<TPayload extends PayloadShape> = (
  *       from this special action.
  */
 
-type StateNode<TPayload extends PayloadShape> =
+type StateNode<TCommand extends CommandShape> =
   | {
       initial: StatePath;
-      states: { [state: string]: Rules<TPayload> };
+      states: { [state: string]: Rules<TCommand> };
     }
   | { initial?: never; states?: never };
 
-export type Rules<TPayload extends PayloadShape> = StateNode<TPayload> & {
+export type Rules<TCommand extends CommandShape> = StateNode<TCommand> & {
   id?: string;
   entry?: Action<{ command: 'entry' }>;
   exit?: Action<{ command: 'exit' }>;
   on?: {
-    [K in TPayload['command']]?: Action<TPayload & { command: K }>;
+    [K in TCommand['command']]?: Action<TCommand & { command: K }>;
   };
 };
 
+export type MachineConfig<TCommand extends CommandShape> = Rules<TCommand> & {
+  id: string;
+};
 /**
  * Define Machine object.
  */
-export interface Machine<TPayload extends PayloadShape = any> {
-  rules: Rules<TPayload> & { id: string };
-  _transition: (
-    _current: Rules<TPayload>,
-    state: AbsoluteStatePath,
-    target: StatePath
-  ) => AbsoluteStatePath;
-  _target: (
-    _current: Rules<TPayload>,
-    state: RelativeStatePath
-  ) => Rules<TPayload>;
-  _targetAbsolute: (state: AbsoluteStatePath) => Rules<TPayload>;
+export interface Machine<TCommand extends CommandShape = any> {
+  rules: MachineConfig<TCommand>;
+  //   _transition: (
+  //     _current: Rules<TCommand>,
+  //     state: AbsoluteStatePath,
+  //     target: StatePath
+  //   ) => AbsoluteStatePath;
+  //   _target: (
+  //     _current: Rules<TCommand>,
+  //     state: RelativeStatePath
+  //   ) => Rules<TCommand>;
+  //   _targetAbsolute: (state: AbsoluteStatePath) => Rules<TCommand>;
   emit: (
     absoluteStateId: StateId,
     // action: string,
-    payload: TPayload
+    payload: TCommand
   ) => StateId;
 }
 
@@ -121,138 +124,129 @@ export function toStatePath(id: StateId): StatePath {
 export function toStateId(topId: string, path: AbsoluteStatePath): StateId {
   return `#${topId}.${path.join('.')}`;
 }
+
 /**
  * Define Machine constructor.
  */
-export type MachineCtor<TPayload extends PayloadShape> = {
-  new (rules: Rules<TPayload>): Machine<TPayload>;
-};
+// export type MachineCtor<TCommand extends PayloadShape> = {
+//   new (rules: Rules<TCommand>): Machine<TCommand>;
+// };
 
 /**
  * Create a new Machine object.
+ *
+ * @todo Add onTransition option.
  */
-export const Machine = function <TPayload extends PayloadShape>(
-  this: Machine<TPayload>,
-  rules: Rules<TPayload> & { id: string }
-): Machine<TPayload> {
-  if (!new.target) {
-    throw new Error('Machine() must be called with new !');
-  }
-
-  this.rules = rules;
-  /**
-   * Execute Action handler if a rule for given action name exists in current
-   * Machine State, passing along given payload as Action arguments.
-   *
-   * Transition to State returned by executed Action handler if any.
-   *
-   * @todo Consider using hasOwnProperty or not inheriting from Object to avoid
-   *       unintended match on {} prototype methods.
-   *
-   * @todo Handle 'globally' available actions ?
-   */
-  this.emit = (() => {
-    return (
-      absoluteStateId: StateId,
-      //   action: TPayload['command'],
-      payload: TPayload
-    ) => {
+export const createMachine = function <TCommand extends CommandShape>(
+  config: MachineConfig<TCommand>
+): Machine<TCommand> {
+  const machine = {
+    rules: config,
+    /**
+     * Execute Action handler if a rule for given action name exists in current
+     * Machine State, passing along given payload as Action arguments.
+     *
+     * Transition to State returned by executed Action handler if any.
+     *
+     * @todo Consider using hasOwnProperty or not inheriting from Object to avoid
+     *       unintended match on {} prototype methods.
+     *
+     * @todo Handle 'globally' available actions ?
+     */
+    emit: (absoluteStateId: StateId, payload: TCommand) => {
       /** @todo Look for a way to 'enforce' absoluteStateId beyond asking nicely. */
       const statePath = toStatePath(absoluteStateId) as AbsoluteStatePath;
       //   const _current = this._targetAbsolute(state);
 
-      let _current: Rules<TPayload> = this.rules;
-      let handler: Action<TPayload> | undefined = undefined;
+      let current: Rules<TCommand> = config;
+      let handler: Action<TCommand> | undefined = undefined;
 
       for (let i = 0, depth = statePath.length; i < depth; i++) {
-        const exists = _current.states?.[statePath[i]];
+        const exists = current.states?.[statePath[i]];
         if (exists) {
-            _current = exists;
+          current = exists;
         } else {
           throw new Error(
-            `Invalid path : ${absoluteStateId} does not exist in ${this.rules.id} !`
+            `Invalid path : ${absoluteStateId} does not exist in ${config.id} !`
           );
         }
         /**
          * Latch on deepest available command handler if any.
-         * 
-         * @todo Check if asserting TPayload['command'] is fine or if TS has reasons
+         *
+         * @todo Check if asserting TCommand['command'] is fine or if TS has reasons
          *       to be dubious about it.
          */
-        handler = _current.on?.[payload.command as TPayload['command']] ?? handler;
+        handler =
+          current.on?.[payload.command as TCommand['command']] ?? handler;
       }
 
       if (handler) {
         const target = handler(payload);
         return target
-          ? toStateId(
-              this.rules.id,
-              this._transition(_current, statePath, target)
-            )
+          ? toStateId(config.id, transition(config, current, statePath, target))
           : absoluteStateId;
       }
       return absoluteStateId;
-    };
-  })();
+    },
+  };
 
-  return this;
-}; //as any) as MachineCtor<TestPayload>;
+  return machine;
+};
 /**
  *
  */
-Machine.prototype._targetAbsolute = function <TPayload extends PayloadShape>(
-  this: Machine<TPayload>,
-  state: AbsoluteStatePath
-): Rules<TPayload> {
-  let target: Rules<TPayload> = this.rules;
+function targetByAbsolutePath<TCommand extends CommandShape>(
+  top: Rules<TCommand>,
+  target: AbsoluteStatePath
+): Rules<TCommand> {
+  let state: Rules<TCommand> = top;
 
-  for (let i = 0, depth = state.length; i < depth; i++) {
-    const exists = target.states?.[state[i]];
+  for (let i = 0, depth = target.length; i < depth; i++) {
+    const exists = state.states?.[target[i]];
     if (exists) {
-      target = exists;
+      state = exists;
     } else {
       throw new Error(
-        `${state[i]} does not exist in ${i ? state[i - 1] : 'top level'} !`
+        `${target[i]} does not exist in ${i ? target[i - 1] : 'top level'} !`
       );
     }
   }
-  return target;
-};
+  return state;
+}
 
 /**
  *
  */
-Machine.prototype._target = function <TPayload extends PayloadShape>(
-  this: Machine<TPayload>,
-  _current: Rules<TPayload>,
-  state: RelativeStatePath
-): Rules<TPayload> {
-  const target = _current.states?.[state];
-  if (!target) {
-    throw new Error(`${state} does not exist in ${JSON.stringify(_current)} !`);
+function targetByRelativePath<TCommand extends CommandShape>(
+  from: Rules<TCommand>,
+  target: RelativeStatePath
+): Rules<TCommand> {
+  const state = from.states?.[target];
+  if (!state) {
+    throw new Error(`${target} does not exist in ${JSON.stringify(from)} !`);
   }
-  return target;
-};
+  return state;
+}
 
 /**
  *
  */
-Machine.prototype._transition = function <TPayload extends PayloadShape>(
-  this: Machine<TPayload>,
-  _current: Rules<TPayload>,
-  state: AbsoluteStatePath,
+function transition<TCommand extends CommandShape>(
+  top: Rules<TCommand>,
+  from: Rules<TCommand>,
+  fromPath: AbsoluteStatePath,
   target: StatePath
 ): AbsoluteStatePath {
-  _current.exit?.({ command: 'exit' });
+  from.exit?.({ command: 'exit' });
 
   let _new, newState;
 
   if (Array.isArray(target)) {
-    _new = this._targetAbsolute(target);
+    _new = targetByAbsolutePath(top, target);
     newState = target;
   } else {
-    _new = this._target(_current, target);
-    newState = [...state, target];
+    _new = targetByRelativePath(from, target);
+    newState = [...fromPath, target];
   }
 
   _new.entry?.({ command: 'entry' });
@@ -260,10 +254,8 @@ Machine.prototype._transition = function <TPayload extends PayloadShape>(
   /**
    * @todo fire whatever is registered as .onTransition here.
    */
-  return _new.initial
-    ? this._transition(_new, newState, _new.initial)
-    : newState;
-};
+  return _new.initial ? transition(top, _new, newState, _new.initial) : newState;
+}
 
 /**
  * @todo Hook factory.
@@ -275,7 +267,7 @@ Machine.prototype._transition = function <TPayload extends PayloadShape>(
  */
 
 type WithDispatch = { dispatch: {} };
-type TestPayload = WithDispatch &
+type TestCommand = WithDispatch &
   (
     | { command: 'fetchCalendars' }
     | { command: 'fetchCalendarsSuccess'; delay: number }
@@ -287,7 +279,7 @@ type TestPayload = WithDispatch &
       }
   );
 
-const AnotherRuleSet: Rules<TestPayload> = {
+const AnotherRuleSet: MachineConfig<TestCommand> = {
   id: 'calendarMachine',
   initial: 'IDLE',
   states: {
@@ -306,11 +298,27 @@ const AnotherRuleSet: Rules<TestPayload> = {
   },
 };
 
-const testMachine = new ((Machine as any) as MachineCtor<TestPayload>)(
-  AnotherRuleSet
-);
+const testMachine = createMachine(AnotherRuleSet);
+const testMachineD = createMachine<TestCommand>({
+  id: 'calendarMachine',
+  initial: 'IDLE',
+  states: {
+    LOADING_CALENDARS: {
+      on: {
+        fetchCalendarsSuccess: (payload) => {
+          //   if (payload.command === 'fetchCalendarsSuccess') {
+          console.log(payload.command, payload.dispatch);
+          //   }
+          return 'CALENDARS_FETCHED';
+        },
+        fetchCalendarsFailure: ({ command, dispatch, a, b, c: { d, e } }) =>
+          'FAILURE',
+      },
+    },
+  },
+});
 
-// const actionTest: Action<TestPayload> = (payload) => {
+// const actionTest: Action<TesTCommand> = (payload) => {
 //   if (payload.command === 'fetchCalendarsSuccess') {
 //     console.log(payload.command, payload.delay);
 //   }
@@ -323,7 +331,7 @@ const testMachine = new ((Machine as any) as MachineCtor<TestPayload>)(
 // const actionTest2: Action<{ command: string }> = () => null;
 // const actionTest4: Action<{ command: string }> = (payload: { a: string }) => null;
 
-// const AnotherRuleSet: Rules<TestPayload> = {
+// const AnotherRuleSet: Rules<TesTCommand> = {
 //   id: 'calendarMachine',
 //   initial: 'IDLE',
 //   states: {
